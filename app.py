@@ -25,6 +25,11 @@ load_dotenv()
 
 app = Flask(__name__)
 
+port = os.environ.get("PORT", 5000)
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=port)
+
 # Setup Flask Session
 app.config['SESSION_TYPE'] = 'filesystem'  # Penyimpanan session di filesystem
 app.config['SECRET_KEY'] = os.getenv("SESSION_SECRET_KEY")  # Secret key untuk session
