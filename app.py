@@ -54,7 +54,7 @@ model_path = "hybrid_ncf_cbf_model_v3.pth"
 google_drive_id = "16t7UtJxap44J2_hkqtTJtNd4duG40r7K"  
 download_url = f"https://drive.google.com/uc?id={google_drive_id}"
 
-@app.route("/")
+@app.route("/test")
 def home():
     return "API is running!"
 
