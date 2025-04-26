@@ -320,17 +320,7 @@ def recommend_cbf_by_recipe():
     
     return jsonify({"recommendations": result}), 200
 
-def load_everything():
-    global model, user_encoder, item_encoder, cbf_features, model_ready, ncf_data
-
-    try:
-        
-        # Cek jika model belum ada, download dari Google Drive
-        if not os.path.exists(model_path):
-            print("Downloading model from Google Drive...")
-            gdown.download(download_url, model_path, quiet=False)
-
-        class HybridNCF(nn.Module):
+class HybridNCF(nn.Module):
             # Define the same HybridNCF model as in your script
             def __init__(self, num_users, num_items, cbf_features, embedding_dim=64):
                 super(HybridNCF, self).__init__()
@@ -343,25 +333,6 @@ def load_everything():
                 self.fc2 = nn.Linear(128, 64)
                 self.fc3 = nn.Linear(64, 1)
                 self.relu = nn.ReLU()
-
-            # def forward(self, user_ids, item_ids):
-            #     user_embeds = self.user_embedding(user_ids)
-            #     item_embeds = self.item_embedding(item_ids)
-            #     # Cek ukuran tensor
-            #     print(f"user_embeds size: {user_embeds.size()}")
-            #     print(f"item_embeds size: {item_embeds.size()}")
-
-            #     cbf_embeds = self.cbf_features[item_ids]  # Mengambil cbf_features yang sudah ada di model
-            #     # Cek ukuran cbf_embeds
-            #     print(f"cbf_embeds size: {cbf_embeds.size()}")
-
-            #     x = torch.cat([user_embeds, item_embeds, cbf_embeds], dim=1)
-            #     x = self.relu(self.fc1(x))
-            #     x = self.bn1(x)
-            #     x = self.dropout(x)
-            #     x = self.relu(self.fc2(x))
-            #     output = torch.sigmoid(self.fc3(x))
-            #     return output
 
             def forward(self, user_ids, item_ids):
                 user_embeds = self.user_embedding(user_ids)  # [1, 64]
@@ -380,27 +351,30 @@ def load_everything():
                 output = torch.sigmoid(self.fc3(x))
                 return output
 
+def load_everything():
+    global model, user_encoder, item_encoder, cbf_features, model_ready, ncf_data
+
+    try:
+        # Cek jika model belum ada, download dari Google Drive
+        if not os.path.exists(model_path):
+            print("Downloading model from Google Drive...")
+            gdown.download(download_url, model_path, quiet=False)
 
         # Load datasets
         ncf_data = pd.read_csv('all_data_ncf.csv')
         cbf_data = pd.read_csv('data_for_cbf.csv')
 
-
-        # Load model NCF
-        model = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
-        model.eval()
-
-
+        # Load CBF embeddings
+        with open("CBF_MODEL_FIX_TA.pkl", "rb") as f:
+            cbf_embeddings = pickle.load(f)
+        
         # Load encoders
         with open("user_encoder.pkl", "rb") as f:
             user_encoder = pickle.load(f)
 
         with open("item_encoder.pkl", "rb") as f:
             item_encoder = pickle.load(f)
-
-        # Load CBF embeddings
-        with open("CBF_MODEL_FIX_TA.pkl", "rb") as f:
-            cbf_embeddings = pickle.load(f)
+        
 
         cbf_features = np.zeros((len(item_encoder.classes_), cbf_embeddings.shape[1]))
         for idx, item_id in enumerate(item_encoder.classes_):
@@ -409,6 +383,12 @@ def load_everything():
                 cbf_features[idx] = cbf_embeddings[item_index].toarray()
         cbf_features = torch.tensor(cbf_features, dtype=torch.float32)
 
+
+        # Load model NCF
+        model = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
+        model.eval()
+
+        
         model_ready = True
         print("Model and components loaded successfully!")
 
