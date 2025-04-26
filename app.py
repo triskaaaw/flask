@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from flask_session import Session
 import os
 import gdown
+import threading
 
 load_dotenv()
 
@@ -50,6 +51,7 @@ data_komen = db_raw['part1_data_comment']
 model_path = "hybrid_ncf_cbf_model_v3.pth"
 google_drive_id = "16t7UtJxap44J2_hkqtTJtNd4duG40r7K"  
 download_url = f"https://drive.google.com/uc?id={google_drive_id}"
+model_ready = False
 
 @app.route("/test")
 def home():
@@ -318,95 +320,112 @@ def recommend_cbf_by_recipe():
     
     return jsonify({"recommendations": result}), 200
 
+def load_everything():
+    global model, user_encoder, item_encoder, cbf_features, model_ready, ncf_data
 
-# Cek jika model belum ada, download dari Google Drive
-if not os.path.exists(model_path):
-    print("Downloading model from Google Drive...")
-    gdown.download(download_url, model_path, quiet=False)
+    try:
+        
+        # Cek jika model belum ada, download dari Google Drive
+        if not os.path.exists(model_path):
+            print("Downloading model from Google Drive...")
+            gdown.download(download_url, model_path, quiet=False)
 
-class HybridNCF(nn.Module):
-    # Define the same HybridNCF model as in your script
-    def __init__(self, num_users, num_items, cbf_features, embedding_dim=64):
-        super(HybridNCF, self).__init__()
-        self.user_embedding = nn.Embedding(num_users, embedding_dim)
-        self.item_embedding = nn.Embedding(num_items, embedding_dim)
-        self.cbf_features = cbf_features
-        self.fc1 = nn.Linear(embedding_dim * 2 + cbf_features.shape[1], 128)
-        self.bn1 = nn.BatchNorm1d(128)
-        self.dropout = nn.Dropout(0.3)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
+        class HybridNCF(nn.Module):
+            # Define the same HybridNCF model as in your script
+            def __init__(self, num_users, num_items, cbf_features, embedding_dim=64):
+                super(HybridNCF, self).__init__()
+                self.user_embedding = nn.Embedding(num_users, embedding_dim)
+                self.item_embedding = nn.Embedding(num_items, embedding_dim)
+                self.cbf_features = cbf_features
+                self.fc1 = nn.Linear(embedding_dim * 2 + cbf_features.shape[1], 128)
+                self.bn1 = nn.BatchNorm1d(128)
+                self.dropout = nn.Dropout(0.3)
+                self.fc2 = nn.Linear(128, 64)
+                self.fc3 = nn.Linear(64, 1)
+                self.relu = nn.ReLU()
 
-    # def forward(self, user_ids, item_ids):
-    #     user_embeds = self.user_embedding(user_ids)
-    #     item_embeds = self.item_embedding(item_ids)
-    #     # Cek ukuran tensor
-    #     print(f"user_embeds size: {user_embeds.size()}")
-    #     print(f"item_embeds size: {item_embeds.size()}")
+            # def forward(self, user_ids, item_ids):
+            #     user_embeds = self.user_embedding(user_ids)
+            #     item_embeds = self.item_embedding(item_ids)
+            #     # Cek ukuran tensor
+            #     print(f"user_embeds size: {user_embeds.size()}")
+            #     print(f"item_embeds size: {item_embeds.size()}")
 
-    #     cbf_embeds = self.cbf_features[item_ids]  # Mengambil cbf_features yang sudah ada di model
-    #     # Cek ukuran cbf_embeds
-    #     print(f"cbf_embeds size: {cbf_embeds.size()}")
+            #     cbf_embeds = self.cbf_features[item_ids]  # Mengambil cbf_features yang sudah ada di model
+            #     # Cek ukuran cbf_embeds
+            #     print(f"cbf_embeds size: {cbf_embeds.size()}")
 
-    #     x = torch.cat([user_embeds, item_embeds, cbf_embeds], dim=1)
-    #     x = self.relu(self.fc1(x))
-    #     x = self.bn1(x)
-    #     x = self.dropout(x)
-    #     x = self.relu(self.fc2(x))
-    #     output = torch.sigmoid(self.fc3(x))
-    #     return output
+            #     x = torch.cat([user_embeds, item_embeds, cbf_embeds], dim=1)
+            #     x = self.relu(self.fc1(x))
+            #     x = self.bn1(x)
+            #     x = self.dropout(x)
+            #     x = self.relu(self.fc2(x))
+            #     output = torch.sigmoid(self.fc3(x))
+            #     return output
 
-    def forward(self, user_ids, item_ids):
-        user_embeds = self.user_embedding(user_ids)  # [1, 64]
-        item_embeds = self.item_embedding(item_ids)  # [9503, 64]
-        cbf_embeds = self.cbf_features[item_ids]     # [9503, 3337]
+            def forward(self, user_ids, item_ids):
+                user_embeds = self.user_embedding(user_ids)  # [1, 64]
+                item_embeds = self.item_embedding(item_ids)  # [9503, 64]
+                cbf_embeds = self.cbf_features[item_ids]     # [9503, 3337]
 
-        # Expand user_embeds agar ukurannya sama dengan item_embeds dan cbf_embeds
-        user_embeds = user_embeds.expand(item_embeds.size(0), -1)  # [9503, 64]
+                # Expand user_embeds agar ukurannya sama dengan item_embeds dan cbf_embeds
+                user_embeds = user_embeds.expand(item_embeds.size(0), -1)  # [9503, 64]
 
-        # Gabungkan tensor
-        x = torch.cat([user_embeds, item_embeds, cbf_embeds], dim=1)  # [9503, 64 + 64 + 3337]
-        x = self.relu(self.fc1(x))
-        x = self.bn1(x)
-        x = self.dropout(x)
-        x = self.relu(self.fc2(x))
-        output = torch.sigmoid(self.fc3(x))
-        return output
-
-
-# Load datasets
-ncf_data = pd.read_csv('all_data_ncf.csv')
-cbf_data = pd.read_csv('data_for_cbf.csv')
-
-
-# Load model NCF
-model = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
-model.eval()
+                # Gabungkan tensor
+                x = torch.cat([user_embeds, item_embeds, cbf_embeds], dim=1)  # [9503, 64 + 64 + 3337]
+                x = self.relu(self.fc1(x))
+                x = self.bn1(x)
+                x = self.dropout(x)
+                x = self.relu(self.fc2(x))
+                output = torch.sigmoid(self.fc3(x))
+                return output
 
 
-# Load encoders
-with open("user_encoder.pkl", "rb") as f:
-    user_encoder = pickle.load(f)
+        # Load datasets
+        ncf_data = pd.read_csv('all_data_ncf.csv')
+        cbf_data = pd.read_csv('data_for_cbf.csv')
 
-with open("item_encoder.pkl", "rb") as f:
-    item_encoder = pickle.load(f)
 
-# Load CBF embeddings
-with open("CBF_MODEL_FIX_TA.pkl", "rb") as f:
-    cbf_embeddings = pickle.load(f)
+        # Load model NCF
+        model = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
+        model.eval()
 
-cbf_features = np.zeros((len(item_encoder.classes_), cbf_embeddings.shape[1]))
-for idx, item_id in enumerate(item_encoder.classes_):
-    if item_id in cbf_data['idRecipe'].values:
-        item_index = cbf_data[cbf_data['idRecipe'] == item_id].index[0]
-        cbf_features[idx] = cbf_embeddings[item_index].toarray()
-cbf_features = torch.tensor(cbf_features, dtype=torch.float32)
+
+        # Load encoders
+        with open("user_encoder.pkl", "rb") as f:
+            user_encoder = pickle.load(f)
+
+        with open("item_encoder.pkl", "rb") as f:
+            item_encoder = pickle.load(f)
+
+        # Load CBF embeddings
+        with open("CBF_MODEL_FIX_TA.pkl", "rb") as f:
+            cbf_embeddings = pickle.load(f)
+
+        cbf_features = np.zeros((len(item_encoder.classes_), cbf_embeddings.shape[1]))
+        for idx, item_id in enumerate(item_encoder.classes_):
+            if item_id in cbf_data['idRecipe'].values:
+                item_index = cbf_data[cbf_data['idRecipe'] == item_id].index[0]
+                cbf_features[idx] = cbf_embeddings[item_index].toarray()
+        cbf_features = torch.tensor(cbf_features, dtype=torch.float32)
+
+        model_ready = True
+        print("Model and components loaded successfully!")
+
+    except Exception as e:
+        print("Failed to load model:", e)
+
+#Start loading in a separete thread
+threading.Thread(target=load_everything).start()
 
 
 @app.route("/recommend_ncf", methods=["POST"])
-# @jwt_required()
 def recommend_ncf():
+    #cek apakah model sudah siap
+    if not model_ready:
+        return jsonify({"error": "Model masih loading, silahkan coba lagi nanti"}), 503
+    
+
     # Cek apakah user sudah login berdasarkan session
     if 'username' not in session:
         return jsonify({"error": "User not logged in"}), 401
