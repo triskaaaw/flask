@@ -53,6 +53,13 @@ google_drive_id = "16t7UtJxap44J2_hkqtTJtNd4duG40r7K"
 download_url = f"https://drive.google.com/uc?id={google_drive_id}"
 model_ready = False
 
+# Inisialisasi model dll sebagai None dulu
+model = None
+user_encoder = None
+item_encoder = None
+cbf_features = None
+ncf_data = None
+
 @app.route("/test")
 def home():
     return "API is running!"
@@ -351,62 +358,74 @@ class HybridNCF(nn.Module):
                 output = torch.sigmoid(self.fc3(x))
                 return output
 
-def load_everything():
+# Pastikan model siap dengan fungsi ini
+def ensure_model_ready():
     global model, user_encoder, item_encoder, cbf_features, model_ready, ncf_data
 
+    if model_ready:
+        return
+
     try:
-        # Cek jika model belum ada, download dari Google Drive
         if not os.path.exists(model_path):
-            print("Downloading model from Google Drive...")
+            print("Downloading model .pth from Google Drive...")
             gdown.download(download_url, model_path, quiet=False)
 
-        # Load datasets
+        required_files = [
+            'all_data_ncf.csv',
+            'data_for_cbf.csv',
+            'CBF_MODEL_FIX_TA.pkl',
+            'user_encoder.pkl',
+            'item_encoder.pkl'
+        ]
+        for file in required_files:
+            if not os.path.exists(file):
+                raise FileNotFoundError(f"File {file} tidak ditemukan!")
+
         ncf_data = pd.read_csv('all_data_ncf.csv')
         cbf_data = pd.read_csv('data_for_cbf.csv')
 
-        # Load CBF embeddings
+        import pickle
         with open("CBF_MODEL_FIX_TA.pkl", "rb") as f:
             cbf_embeddings = pickle.load(f)
-        
-        # Load encoders
+
         with open("user_encoder.pkl", "rb") as f:
             user_encoder = pickle.load(f)
 
         with open("item_encoder.pkl", "rb") as f:
             item_encoder = pickle.load(f)
-        
 
-        cbf_features = np.zeros((len(item_encoder.classes_), cbf_embeddings.shape[1]))
+        import numpy as np
+        cbf_features_arr = np.zeros((len(item_encoder.classes_), cbf_embeddings.shape[1]))
         for idx, item_id in enumerate(item_encoder.classes_):
             if item_id in cbf_data['idRecipe'].values:
                 item_index = cbf_data[cbf_data['idRecipe'] == item_id].index[0]
-                cbf_features[idx] = cbf_embeddings[item_index].toarray()
-        cbf_features = torch.tensor(cbf_features, dtype=torch.float32)
+                cbf_features_arr[idx] = cbf_embeddings[item_index].toarray()
 
+        import torch
+        cbf_features = torch.tensor(cbf_features_arr, dtype=torch.float32)
 
-        # Load model NCF
-        model = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
+        model = torch.load(model_path, map_location=torch.device("cpu"))
         model.eval()
 
-        
         model_ready = True
-        print("Model and components loaded successfully!")
+        print("Model and data loaded successfully!")
 
     except Exception as e:
-        print("Failed to load model:", e)
+        print("Failed to load model or data:", e)
 
 #Start loading in a separete thread
-threading.Thread(target=load_everything).start()
+threading.Thread(target=ensure_model_ready, daemon=True).start()
 
 
 @app.route("/recommend_ncf", methods=["POST"])
 def recommend_ncf():
-    #cek apakah model sudah siap
-    if not model_ready:
-        return jsonify({"error": "Model masih loading, silahkan coba lagi nanti"}), 503
-    
+    # Pastikan model dan semua komponen sudah siap
+    ensure_model_ready()
 
-    # Cek apakah user sudah login berdasarkan session
+    if not model_ready:
+        return jsonify({"error": "Model masih loading atau gagal load"}), 503
+    
+   # Cek apakah user sudah login berdasarkan session
     if 'username' not in session:
         return jsonify({"error": "User not logged in"}), 401
     
